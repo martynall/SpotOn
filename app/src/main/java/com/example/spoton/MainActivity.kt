@@ -84,10 +84,12 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         if (user == null) {
-                            GoogleSignInButton(onClick = {
+                            Button(onClick = {
                                 val signInIntent = googleSignInClient.signInIntent
                                 launcher.launch(signInIntent)
-                            })
+                            }) {
+                                Text("Zaloguj się przez Google")
+                            }
                         } else {
                             Text("Witaj, ${user?.displayName}")
                             Spacer(modifier = Modifier.height(16.dp))

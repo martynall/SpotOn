@@ -64,7 +64,7 @@ import com.example.spoton.R
 import androidx.compose.ui.res.painterResource
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.firestore.ktx.firestore
-import androidx.appcompat.content.res.AppCompatResources
+import com.google.firebase.firestore.FieldValue
 
 private const val TAG = "MainActivity"
 
@@ -104,23 +104,27 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        if (user == null) {
+                    if (user == null) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
                             Button(onClick = {
                                 val signInIntent = googleSignInClient.signInIntent
                                 launcher.launch(signInIntent)
                             }) {
                                 Text("Zaloguj się przez Google")
                             }
-                        } else {
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(16.dp),
+                            verticalArrangement = Arrangement.Top,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
                             Text("Witaj, ${user?.displayName}")
-                            Spacer(modifier = Modifier.height(16.dp))
-                            OpenStreetMapDialog(refresh = refresh, onRefresh = { refresh++ })
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             Button(onClick = {
                                 auth.signOut()
                                 googleSignInClient.signOut()
@@ -128,6 +132,10 @@ class MainActivity : ComponentActivity() {
                             }) {
                                 Text("Wyloguj się")
                             }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            OpenStreetMapDialog(refresh = refresh, onRefresh = { refresh++ })
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Leaderboard()
                             BluetoothPermissionScreen()
                         }
                     }
@@ -185,6 +193,7 @@ fun OpenStreetMapView(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val db = Firebase.firestore
+    val user = FirebaseAuth.getInstance().currentUser
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
     val locationCallback = remember {
@@ -228,7 +237,6 @@ fun OpenStreetMapView(
     }
 
     LaunchedEffect(permissionGranted, refresh) {
-        val user = FirebaseAuth.getInstance().currentUser
         if (permissionGranted && user != null) {
             db.collection("users")
                 .document(user.uid)
@@ -239,47 +247,85 @@ fun OpenStreetMapView(
                 }
         }
     }
+    var mapCentered by remember { mutableStateOf(false) }
 
     if (location != null) {
         Box(modifier = modifier) {
-           AndroidView(
-               modifier = Modifier.fillMaxSize(),
-               factory = {
-                   Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
-                   val map = MapView(context)
-                   map.setMultiTouchControls(true)
-                   map
-               },
-               update = { map ->
-                   map.overlays.clear()
-                   location?.let {
-                       val userPoint = GeoPoint(it.latitude, it.longitude)
-                       val marker = Marker(map)
-                       marker.position = userPoint
-                       marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                       marker.title = "Twoja lokalizacja"
-                       map.overlays.add(marker)
-                   }
-                   userSpots.forEach { spot ->
-                       val spotMarker = Marker(map)
-                       spotMarker.position = GeoPoint(spot.latitude, spot.longitude)
-                       spotMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                       spotMarker.title = spot.name
-                       val icon = AppCompatResources.getDrawable(context, R.drawable.ic_baseline_star_24)
-                       if (icon != null) {
-                           spotMarker.icon = icon
-                       }
-                       map.overlays.add(spotMarker)
-                   }
-                   map.invalidate()
-               }
-           )
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
+                    val map = MapView(context)
+                    map.setMultiTouchControls(true)
+                    map.controller.setZoom(18.0)
+                    map
+                },
+                update = { map ->
+                    map.overlays.clear()
+                    location?.let {
+                        val userPoint = GeoPoint(it.latitude, it.longitude)
+                        if (!mapCentered) {
+                            map.controller.setCenter(userPoint)
+                            mapCentered = true
+                        }
+                        val marker = Marker(map)
+                        marker.position = userPoint
+                        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        marker.title = "Twoja lokalizacja"
+                        map.overlays.add(marker)
+                    }
+                    userSpots.forEach { spot ->
+                        val spotMarker = Marker(map)
+                        spotMarker.position = GeoPoint(spot.latitude, spot.longitude)
+                        spotMarker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        spotMarker.title = if (spot.visited) "odwiedzony" else "nieodwiedzony"
+                        val drawableId = if (spot.userId == user?.uid) {
+                            R.drawable.ic_baseline_star_24
+                        } else if (spot.visited) {
+                            R.drawable.ic_baseline_star_26
+                        } else {
+                            R.drawable.ic_baseline_star_25
+                        }
+                        val drawable = ContextCompat.getDrawable(context, drawableId)
+                        spotMarker.icon = drawable
+                        spotMarker.setOnMarkerClickListener { marker, _ ->
+                            if (location != null && !spot.visited) {
+                                if (isNearby(location!!, spot)) {
+                                    if (user != null) {
+                                        db.collection("users")
+                                            .document(user.uid)
+                                            .collection("spots")
+                                            .whereEqualTo("latitude", spot.latitude)
+                                            .whereEqualTo("longitude", spot.longitude)
+                                            .get()
+                                            .addOnSuccessListener { docs ->
+                                                for (doc in docs) {
+                                                    db.collection("users")
+                                                        .document(user.uid)
+                                                        .collection("spots")
+                                                        .document(doc.id)
+                                                        .update("visited", true)
+                                                }
+                                                scope.launch { snackbarHostState.showSnackbar("Miejsce zostało odwiedzone!") }
+                                                onRefresh()
+                                            }
+                                    }
+                                } else {
+                                    scope.launch { snackbarHostState.showSnackbar("Jesteś za daleko od tego miejsca!") }
+                                }
+                            }
+                            true
+                        }
+                        map.overlays.add(spotMarker)
+                    }
+                    map.invalidate()
+                }
+            )
             FloatingActionButton(
                 onClick = {
                     location?.let {
-                        addCurrentLocationToFavorites(it, "Moje ulubione miejsce")
+                        addCurrentLocationToFavorites(it)
                         scope.launch { snackbarHostState.showSnackbar("Dodano do twoich miejsc") }
-                        val user = FirebaseAuth.getInstance().currentUser
                         if (user != null) {
                             db.collection("users")
                                 .document(user.uid)
@@ -315,6 +361,55 @@ fun OpenStreetMapView(
     }
 }
 
+@Composable
+fun Leaderboard() {
+    val db = Firebase.firestore
+    var leaderboard by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        db.collectionGroup("spots")
+            .whereEqualTo("visited", true)
+            .get()
+            .addOnSuccessListener { result ->
+                val pointsMap = result.mapNotNull { it.toObject(Spot::class.java) }
+                    .groupingBy { it.userId }
+                    .eachCount()
+
+                if (pointsMap.isNotEmpty()) {
+                    db.collection("users")
+                        .whereIn("uid", pointsMap.keys.toList())
+                        .get()
+                        .addOnSuccessListener { users ->
+                            val leaderboardList = users.map {
+                                val name = it.getString("displayName") ?: "?"
+                                val uid = it.getString("uid") ?: ""
+                                val points = pointsMap[uid] ?: 0
+                                name to points
+                            }.sortedByDescending { it.second }
+                            leaderboard = leaderboardList
+                            loading = false
+                        }
+                        .addOnFailureListener {
+                            loading = false
+                        }
+                } else {
+                    leaderboard = emptyList()
+                    loading = false
+                }
+            }
+            .addOnFailureListener {
+                loading = false
+            }
+    }
+
+    Column {
+        Text("Leaderboard:")
+        when {
+            loading -> Text("Ładowanie...")
+            leaderboard.isEmpty() -> Text("Brak znajomych.")
+            else -> leaderboard.forEachIndexed { idx, (name, points) ->
+                Text("${idx + 1}. $name: $points pkt")
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable

@@ -7,41 +7,20 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:630264640262:android:bf67f4cf9b6fcc277aa487",
-        "android_client_info": {
-          "package_name": "com.example.SpotOn"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "630264640262-ao3lfq4igid4tph164uek14hvpbje65i.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "AIzaSyCQrWvze-jv4xBi1ajTNF9e5Kovt3ezXNk"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "630264640262-ao3lfq4igid4tph164uek14hvpbje65i.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    },
-    {
-      "client_info": {
         "mobilesdk_app_id": "1:630264640262:android:1863c1a9859478eb7aa487",
         "android_client_info": {
           "package_name": "com.example.spoton"
         }
       },
       "oauth_client": [
+        {
+          "client_id": "630264640262-uop94temu80lojv0u0lbemehsmi384o6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.spoton",
+            "certificate_hash": "e45d885f02c59a54fec63c230d9347f97f53e90e"
+          }
+        },
         {
           "client_id": "630264640262-ao3lfq4igid4tph164uek14hvpbje65i.apps.googleusercontent.com",
           "client_type": 3

@@ -48,6 +48,7 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.16")
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.google.android.gms:play-services-location:21.0.1")
+    implementation("com.google.accompanist:accompanist-permissions:0.37.3")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

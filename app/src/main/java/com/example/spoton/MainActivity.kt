@@ -1,6 +1,19 @@
 package com.example.spoton
 
 import com.example.spoton.Spot
+import android.os.Build
+import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.rememberMultiplePermissionsState
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.shouldShowRationale
 import android.os.Bundle
 import android.annotation.SuppressLint
 import android.util.Log
@@ -59,6 +72,9 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var auth: FirebaseAuth
     private lateinit var googleSignInClient: GoogleSignInClient
+
+
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -120,6 +136,7 @@ class MainActivity : ComponentActivity() {
                             OpenStreetMapDialog(refresh = refresh, onRefresh = { refresh++ })
                             Spacer(modifier = Modifier.height(16.dp))
                             Leaderboard()
+                            BluetoothPermissionScreen()
                         }
                     }
                 }
@@ -393,6 +410,55 @@ fun Leaderboard() {
             leaderboard.isEmpty() -> Text("Brak znajomych.")
             else -> leaderboard.forEachIndexed { idx, (name, points) ->
                 Text("${idx + 1}. $name: $points pkt")
+
+@OptIn(ExperimentalPermissionsApi::class)
+@Composable
+fun BluetoothPermissionScreen() {
+    val context = LocalContext.current
+
+    val bluetoothPermissions = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    val permissionState = rememberMultiplePermissionsState(permissions = bluetoothPermissions)
+
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        val allPermissionsGranted = permissionState.allPermissionsGranted
+
+        if (allPermissionsGranted) {
+            Text("Wszystkie uprawnienia Bluetooth zostały przyznane!")
+            Button(onClick = {
+                Toast.makeText(context, "Wykonuję operacje Bluetooth...", Toast.LENGTH_SHORT).show()
+            }) {
+                Text("Rozpocznij operacje Bluetooth")
+            }
+        } else {
+            val anyPermissionDenied = permissionState.revokedPermissions.any { it.status.shouldShowRationale }
+
+            if (anyPermissionDenied) {
+                Text("Potrzebujemy uprawnień Bluetooth, aby aplikacja mogła działać poprawnie. Proszę je przyznać.")
+                Button(onClick = { permissionState.launchMultiplePermissionRequest() }) {
+                    Text("Przyznaj uprawnienia")
+                }
+            } else {
+                Text("Aplikacja potrzebuje uprawnień Bluetooth.")
+                Button(onClick = { permissionState.launchMultiplePermissionRequest() }) {
+                    Text("Poproś o uprawnienia")
+                }
+            }
+
+            Button(onClick = {
+                Toast.makeText(context, "Status uprawnień: ${permissionState.permissions.joinToString { "${it.permission}: ${it.status.isGranted}" }}", Toast.LENGTH_LONG).show()
+            }) {
+                Text("Sprawdź ponownie status uprawnień")
             }
         }
     }

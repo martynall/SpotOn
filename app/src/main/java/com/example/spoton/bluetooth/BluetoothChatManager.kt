@@ -6,11 +6,15 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.widget.Toast
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -24,25 +28,21 @@ const val MESSAGE_WRITE = 2
 const val MESSAGE_DEVICE_NAME = 3
 const val MESSAGE_TOAST = 4
 
-// Stałe dla UUID i nazwy aplikacji
-// WAŻNE: Zmień ten UUID na unikalny dla Twojej aplikacji!
-// Możesz wygenerować nowy UUID online, np. na uuidgenerator.net
-val MY_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // Standardowy UUID dla SPP - możesz użyć własnego
-const val APP_NAME = "MyBluetoothChat" // Nazwa Twojej usługi Bluetooth
+const val APP_NAME = "spoton"
 
-// Przykład klasy BluetoothManager / BluetoothChatService dla Compose
+//class BluetoothChatManager(private val context: Context, private val handler: Handler)
 @SuppressLint("MissingPermission")
-class BluetoothChatManager(private val context: Context, private val handler: Handler) {
-
-    // Użyj MutableStateFlow do udostępniania stanu połączenia
+class BluetoothChatManager(private val context: Context) {
+    val MY_UUID: UUID = UUID.fromString("e483c180-b9e2-4a57-a761-cbdc90b69b54")
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState
 
-    // Użyj MutableStateFlow do udostępniania listy znalezionych urządzeń
     private val _foundDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
     val foundDevices: StateFlow<List<BluetoothDevice>> = _foundDevices
 
-    // Użyj MutableStateFlow do udostępniania listy wiadomości (historii czatu)
+    private val _isDiscoveryFinished = MutableStateFlow(false)
+    val isDiscoveryFinished: StateFlow<Boolean> = _isDiscoveryFinished
+
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages
 
@@ -50,6 +50,35 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
     private var acceptThread: AcceptThread? = null
     private var connectThread: ConnectThread? = null
     private var connectedThread: ConnectedThread? = null
+
+    private var oldName: String? = null
+
+    private val discoveryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BluetoothDevice.ACTION_FOUND -> {
+                    val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    device?.let {
+                        _foundDevices.update { currentList ->
+                            if (!currentList.any { it.address == device.address }) {
+                                currentList + device
+                            } else currentList
+                        }
+                    }
+                }
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    _isDiscoveryFinished.value = true
+
+                    val devices = _foundDevices.value
+                    if (devices.isEmpty()) {
+                        Toast.makeText(context, "Nie znaleziono żadnych urządzeń", Toast.LENGTH_SHORT).show()
+                    }
+                    context?.unregisterReceiver(this)
+                }
+            }
+        }
+    }
+
 
     init {
         // Inicjalizacja adaptera Bluetooth
@@ -84,11 +113,9 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
 
     private inner class AcceptThread : Thread() {
         private val mmServerSocket: BluetoothServerSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            // Dostęp do bluetoothAdapter, APP_NAME, MY_UUID z zewnętrznej klasy
             bluetoothAdapter?.listenUsingRfcommWithServiceRecord(APP_NAME, MY_UUID)
         }
         override fun run() {
-            // ... (implementacja run() dla AcceptThread) ...
             var socket: BluetoothSocket? = null
             while (_connectionState.value is ConnectionState.Listening || _connectionState.value is ConnectionState.Disconnected) {
                 try {
@@ -190,7 +217,9 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
                 _messages.update { it + ChatMessage(readMessage, isLocalUser = false) }
             }
             MESSAGE_WRITE -> {
-                // Opcjonalnie: potwierdzenie wysłania
+//                val writeBuf = msg.obj as ByteArray
+//                val writeMessage = String(writeBuf)
+//                _messages.update { it + ChatMessage(writeMessage, isLocalUser = true) }
             }
             MESSAGE_DEVICE_NAME -> {
                 val deviceName = msg.data.getString("device_name")
@@ -208,7 +237,6 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
         true
     }
 
-    // Metoda do inicjalizacji Bluetooth (sprawdzenie dostępności, włączenie)
     fun setupBluetooth(): Boolean {
         if (bluetoothAdapter == null) {
             _connectionState.value = ConnectionState.Error("Bluetooth nie jest obsługiwany.")
@@ -237,10 +265,15 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
     }
 
     fun startClient() {
-        _foundDevices.value = emptyList() // Wyczyść listę
-        // Zarejestruj BroadcastReceiver dla discovery (w Activity lub Lifecycle-aware komponentu)
-        // Rozpocznij discovery (bluetoothAdapter.startDiscovery())
-        _connectionState.value = ConnectionState.Connecting // Stan skanowania
+        _isDiscoveryFinished.value = false
+        bluetoothAdapter?.cancelDiscovery()
+        _foundDevices.value = emptyList()
+        val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+        context.registerReceiver(discoveryReceiver, filter)
+        bluetoothAdapter?.startDiscovery()
+        _connectionState.value = ConnectionState.Connecting
+        Toast.makeText(context, "Coś się wydarzyło", Toast.LENGTH_SHORT).show()
     }
 
     fun connectToDevice(device: BluetoothDevice) {
@@ -260,6 +293,7 @@ class BluetoothChatManager(private val context: Context, private val handler: Ha
 
     fun stop() {
         // Zatrzymaj wszystkie wątki i ustaw stan na Disconnected
+        bluetoothAdapter?.name = oldName
         acceptThread?.cancel()
         acceptThread = null
         connectThread?.cancel()

@@ -38,7 +38,10 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import androidx.activity.compose.rememberLauncherForActivityResult
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.Context
+import android.content.Intent
 import android.location.Location
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -62,9 +65,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.example.spoton.R
 import androidx.compose.ui.res.painterResource
+import com.example.spoton.bluetooth.BluetoothChatManager
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.firestore.FieldValue
+import android.os.Handler
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 private const val TAG = "MainActivity"
 
@@ -73,7 +81,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var auth: FirebaseAuth
     private lateinit var googleSignInClient: GoogleSignInClient
 
-
+    fun makeDeviceDiscoverable() {
+        val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+            putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
+        }
+        startActivity(discoverableIntent)
+    }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,6 +102,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             SpotOnTheme {
+                val scrollState = rememberScrollState()
                 var user by remember { mutableStateOf(auth.currentUser) }
                 var refresh by remember { mutableStateOf(0) }
                 val launcher = rememberLauncherForActivityResult(
@@ -119,11 +133,13 @@ class MainActivity : ComponentActivity() {
                         }
                     } else {
                         Column(
-                            modifier = Modifier.fillMaxSize().padding(16.dp),
+                            modifier = Modifier.fillMaxSize().padding(16.dp)
+                                .verticalScroll(scrollState),
                             verticalArrangement = Arrangement.Top,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text("Witaj, ${user?.displayName}")
+                            BluetoothPermissionScreen()
                             Spacer(modifier = Modifier.height(8.dp))
                             Button(onClick = {
                                 auth.signOut()
@@ -136,7 +152,6 @@ class MainActivity : ComponentActivity() {
                             OpenStreetMapDialog(refresh = refresh, onRefresh = { refresh++ })
                             Spacer(modifier = Modifier.height(16.dp))
                             Leaderboard()
-                            BluetoothPermissionScreen()
                         }
                     }
                 }
@@ -410,11 +425,21 @@ fun Leaderboard() {
             leaderboard.isEmpty() -> Text("Brak znajomych.")
             else -> leaderboard.forEachIndexed { idx, (name, points) ->
                 Text("${idx + 1}. $name: $points pkt")
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun BluetoothPermissionScreen() {
     val context = LocalContext.current
+    val bluetoothChatManager = remember { BluetoothChatManager(context) }
+    var showNewComposable by remember { mutableStateOf(false) }
+    val foundDevices by bluetoothChatManager.foundDevices.collectAsState()
+    val isFinished by bluetoothChatManager.isDiscoveryFinished.collectAsState()
+//    val scrollState = rememberScrollState()
+    val searching = remember { mutableStateOf(false) }
 
     val bluetoothPermissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -427,18 +452,29 @@ fun BluetoothPermissionScreen() {
     val permissionState = rememberMultiplePermissionsState(permissions = bluetoothPermissions)
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         val allPermissionsGranted = permissionState.allPermissionsGranted
 
         if (allPermissionsGranted) {
-            Text("Wszystkie uprawnienia Bluetooth zostały przyznane!")
             Button(onClick = {
-                Toast.makeText(context, "Wykonuję operacje Bluetooth...", Toast.LENGTH_SHORT).show()
+                bluetoothChatManager.startClient()
+                searching.value = true
+                val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                context.startActivity(intent)
+
+//                Toast.makeText(context, "Wykonuję operacje Bluetooth...", Toast.LENGTH_SHORT).show()
             }) {
-                Text("Rozpocznij operacje Bluetooth")
+                Text("Uruchom wyszukiwanie urządzeń Bluetooth")
+            }
+
+            if( searching.value && !isFinished) {
+                Text("wyszukuję urządzenia...")
+            }
+            if (isFinished) {
+                Text("Wyszukiwanie zakończone.")
             }
         } else {
             val anyPermissionDenied = permissionState.revokedPermissions.any { it.status.shouldShowRationale }

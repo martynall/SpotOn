@@ -1,6 +1,5 @@
 package com.example.spoton
 
-import com.example.spoton.Spot
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -39,7 +38,6 @@ import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import androidx.activity.compose.rememberLauncherForActivityResult
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.content.Context
 import android.content.Intent
 import android.location.Location
@@ -49,12 +47,9 @@ import org.osmdroid.config.Configuration
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 import android.content.pm.PackageManager
 import androidx.compose.material3.Card
-import com.google.firebase.firestore.FirebaseFirestore
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
@@ -63,16 +58,13 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
-import com.example.spoton.R
-import androidx.compose.ui.res.painterResource
 import com.example.spoton.bluetooth.BluetoothChatManager
 import com.google.firebase.ktx.Firebase
 import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.firestore.FieldValue
-import android.os.Handler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.font.FontWeight
+import coil.compose.rememberAsyncImagePainter
 
 private const val TAG = "MainActivity"
 
@@ -370,61 +362,80 @@ fun OpenStreetMapView(
             )
         }
     } else if (!permissionGranted) {
-        Text("Aby wyświetlić mapę, nadaj uprawnienia do lokalizacji.")
+        Box (
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("Brak uprawnień do lokalizacji. Proszę je przyznać w ustawieniach aplikacji.")
+        }
     } else {
-        Text("Pobieranie lokalizacji...")
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
     }
 }
 
 @Composable
 fun Leaderboard() {
     val db = Firebase.firestore
-    var leaderboard by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    val currentUser = FirebaseAuth.getInstance().currentUser
+    var leaderboard by remember { mutableStateOf<List<Triple<String, Int, String?>>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        db.collectionGroup("spots")
-            .whereEqualTo("visited", true)
+        db.collection("users")
             .get()
-            .addOnSuccessListener { result ->
-                val pointsMap = result.mapNotNull { it.toObject(Spot::class.java) }
-                    .groupingBy { it.userId }
-                    .eachCount()
-
-                if (pointsMap.isNotEmpty()) {
-                    db.collection("users")
-                        .whereIn("uid", pointsMap.keys.toList())
+            .addOnSuccessListener { users ->
+                val leaderboardList = mutableListOf<Triple<String, Int, String?>>()
+                val tasks = users.map { userDoc ->
+                    val uid = userDoc.getString("uid") ?: return@map null
+                    val name = userDoc.getString("displayName") ?: "?"
+                    var photoUrl = userDoc.getString("photoUrl")
+                    if (uid == currentUser?.uid && photoUrl == null) {
+                        photoUrl = currentUser.photoUrl?.toString()
+                    }
+                    db.collection("users").document(uid).collection("spots")
+                        .whereEqualTo("visited", true)
                         .get()
-                        .addOnSuccessListener { users ->
-                            val leaderboardList = users.map {
-                                val name = it.getString("displayName") ?: "?"
-                                val uid = it.getString("uid") ?: ""
-                                val points = pointsMap[uid] ?: 0
-                                name to points
-                            }.sortedByDescending { it.second }
-                            leaderboard = leaderboardList
-                            loading = false
+                        .addOnSuccessListener { spots ->
+                            leaderboardList.add(Triple(name, spots?.size() ?: 0, photoUrl))
+                            if (leaderboardList.size == users.size()) {
+                                leaderboard = leaderboardList.sortedByDescending { it.second }
+                                loading = false
+                            }
                         }
-                        .addOnFailureListener {
-                            loading = false
-                        }
-                } else {
-                    leaderboard = emptyList()
-                    loading = false
-                }
+                }.filterNotNull()
+                if (tasks.isEmpty()) loading = false
             }
             .addOnFailureListener {
                 loading = false
             }
     }
-
     Column {
         Text("Leaderboard:")
         when {
             loading -> Text("Ładowanie...")
             leaderboard.isEmpty() -> Text("Brak znajomych.")
-            else -> leaderboard.forEachIndexed { idx, (name, points) ->
-                Text("${idx + 1}. $name: $points pkt")
+            else -> leaderboard.forEachIndexed { idx, (name, points, photoUrl) ->
+                val isCurrent = name == currentUser?.displayName
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (photoUrl != null) {
+                        androidx.compose.foundation.Image(
+                            painter = rememberAsyncImagePainter(photoUrl),
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        "${idx + 1}. $name: $points pkt",
+                        //color = if (isCurrent) Color(0xFF1976D2) else Color.Unspecified,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
             }
         }
     }
@@ -435,6 +446,7 @@ fun Leaderboard() {
 fun BluetoothPermissionScreen() {
     val context = LocalContext.current
     val bluetoothChatManager = remember { BluetoothChatManager(context) }
+    val connectionState by bluetoothChatManager.connectionState.collectAsState()
     var showNewComposable by remember { mutableStateOf(false) }
     val foundDevices by bluetoothChatManager.foundDevices.collectAsState()
     val isFinished by bluetoothChatManager.isDiscoveryFinished.collectAsState()
@@ -459,11 +471,15 @@ fun BluetoothPermissionScreen() {
         val allPermissionsGranted = permissionState.allPermissionsGranted
 
         if (allPermissionsGranted) {
+            LaunchedEffect(Unit) {
+                bluetoothChatManager.startServer()
+                (context as? MainActivity)?.makeDeviceDiscoverable()
+            }
             Button(onClick = {
                 bluetoothChatManager.startClient()
                 searching.value = true
-                val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
-                context.startActivity(intent)
+                //val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                //context.startActivity(intent)
 
 //                Toast.makeText(context, "Wykonuję operacje Bluetooth...", Toast.LENGTH_SHORT).show()
             }) {
@@ -495,6 +511,20 @@ fun BluetoothPermissionScreen() {
                 Toast.makeText(context, "Status uprawnień: ${permissionState.permissions.joinToString { "${it.permission}: ${it.status.isGranted}" }}", Toast.LENGTH_LONG).show()
             }) {
                 Text("Sprawdź ponownie status uprawnień")
+            }
+        }
+        foundDevices.forEach { device ->
+            Button(onClick = { bluetoothChatManager.connectToDevice(device) }) {
+                val deviceName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                        device.name
+                    } else {
+                        null
+                    }
+                } else {
+                    device.name
+                }
+                Text("Połącz z: ${device.name ?: device.address}")
             }
         }
     }

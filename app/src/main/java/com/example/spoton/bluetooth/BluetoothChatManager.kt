@@ -2,6 +2,7 @@ package com.example.spoton.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
@@ -15,6 +16,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.widget.Toast
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -22,6 +26,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import android.util.Log
 
 const val MESSAGE_READ = 1
 const val MESSAGE_WRITE = 2
@@ -59,15 +64,26 @@ class BluetoothChatManager(private val context: Context) {
                 BluetoothDevice.ACTION_FOUND -> {
                     val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     device?.let {
-                        _foundDevices.update { currentList ->
-                            if (!currentList.any { it.address == device.address }) {
-                                currentList + device
-                            } else currentList
+                        val deviceClass = it.bluetoothClass?.deviceClass
+                        if (device != null && !device.name.isNullOrBlank()) {
+                            _foundDevices.update { currentList ->
+                                if (!currentList.any { d -> d.address == it.address }) {
+                                    currentList + it
+                                } else currentList
+                            }
                         }
                     }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
                     _isDiscoveryFinished.value = true
+
+                    val pairedDevices = bluetoothAdapter?.bondedDevices?.filter {
+                        !it.name.isNullOrBlank() && !_foundDevices.value.any { d -> d.address == it.address }
+                    } ?: emptyList()
+
+                    if (pairedDevices.isNotEmpty()) {
+                        _foundDevices.update { it + pairedDevices }
+                    }
 
                     val devices = _foundDevices.value
                     if (devices.isEmpty()) {
@@ -94,15 +110,33 @@ class BluetoothChatManager(private val context: Context) {
         data class Connected(val deviceName: String) : ConnectionState()
         data class Error(val message: String) : ConnectionState()
     }
+
+    private var uidSent = false
+
+    private fun sendOwnUidIfNeeded() {
+        if (!uidSent) {
+            val uid = FirebaseAuth.getInstance().currentUser?.uid
+            if (uid != null) {
+                writeMessage("UID:$uid")
+                Log.d("Bluetoothchatt", "Wysłano UID: $uid")
+                mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Twój UID został wysłany") }).sendToTarget()
+                uidSent = true
+            }
+        }
+    }
+
     @Synchronized
     private fun manageConnectedSocket(socket: BluetoothSocket, device: BluetoothDevice) {
         acceptThread?.cancel()
         acceptThread = null
         connectThread?.cancel()
         connectThread = null
+        uidSent = false
 
         connectedThread = ConnectedThread(socket) // Tutaj tworzysz instancję ConnectedThread
         connectedThread?.start()
+        val uid = FirebaseAuth.getInstance().currentUser?.uid
+        sendOwnUidIfNeeded()
 
         val msg = mHandler.obtainMessage(MESSAGE_DEVICE_NAME)
         val bundle = Bundle()
@@ -113,22 +147,34 @@ class BluetoothChatManager(private val context: Context) {
 
     private inner class AcceptThread : Thread() {
         private val mmServerSocket: BluetoothServerSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            bluetoothAdapter?.listenUsingRfcommWithServiceRecord(APP_NAME, MY_UUID)
+            bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(APP_NAME, MY_UUID)
         }
         override fun run() {
             var socket: BluetoothSocket? = null
-            while (_connectionState.value is ConnectionState.Listening || _connectionState.value is ConnectionState.Disconnected) {
-                try {
-                    socket = mmServerSocket?.accept()
-                } catch (e: IOException) {
-                    mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Socket accept() failed: ${e.message}") }).sendToTarget()
-                    break
+            try {
+                Log.d("Bluetoothchat", "Serwer oczekuje na połączenie...")
+                socket = mmServerSocket?.accept()
+                Log.d("Bluetoothchat", "Serwer zaakceptował połączenie")
+                socket?.let { s ->
+                    val deviceName = s.remoteDevice.name ?: s.remoteDevice.address
+                    Handler(Looper.getMainLooper()).post {
+                        // Wyświetl dialog z potwierdzeniem
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("Nowe połączenie Bluetooth")
+                            .setMessage("Połączyć z urządzeniem: $deviceName?")
+                            .setPositiveButton("Tak") { _, _ ->
+                                manageConnectedSocket(s, s.remoteDevice)
+                                Log.d("Bluetoothchat", "AcceptThread: Połączenie zaakceptowane z urządzeniem: ${s.remoteDevice.name ?: s.remoteDevice.address}")
+                            }
+                            .setNegativeButton("Nie") { _, _ ->
+                                try { s.close() } catch (_: IOException) {}
+                            }
+                            .setCancelable(false)
+                            .show()
+                    }
                 }
-                socket?.also {
-                    mmServerSocket?.close()
-                    manageConnectedSocket(it, it.remoteDevice)
-                    return
-                }
+            } catch (e: IOException) {
+                Log.e("Bluetooth", "Błąd serwera: ${e.message}", e)
             }
         }
 
@@ -140,7 +186,7 @@ class BluetoothChatManager(private val context: Context) {
     }
     private inner class ConnectThread(private val device: BluetoothDevice, private val uuid: UUID) : Thread() {
         private val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
-            device.createRfcommSocketToServiceRecord(uuid)
+            device.createInsecureRfcommSocketToServiceRecord(uuid)
         }
 
         override fun run() {
@@ -150,12 +196,13 @@ class BluetoothChatManager(private val context: Context) {
                 mmSocket?.connect()
             } catch (e: IOException) {
                 try { mmSocket?.close() } catch (e2: IOException) { /* Logowanie błędu */ }
-                mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Nie udało się połączyć z urządzeniem: ${e.message}") }).sendToTarget()
+                mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Twój opis błędu") }).sendToTarget()
                 _connectionState.value = ConnectionState.Disconnected
                 return
             }
             mmSocket?.let {
                 manageConnectedSocket(it, device)
+                Log.d("Bluetoothchat", "ConnectThread: Połączono z urządzeniem: ${device.name ?: device.address}")
             }
         }
 
@@ -214,24 +261,27 @@ class BluetoothChatManager(private val context: Context) {
             MESSAGE_READ -> {
                 val readBuf = msg.obj as ByteArray
                 val readMessage = String(readBuf, 0, msg.arg1)
-                _messages.update { it + ChatMessage(readMessage, isLocalUser = false) }
+                if (readMessage.startsWith("UID:")) {
+                    val foreignUid = readMessage.removePrefix("UID:").trim()
+                    Log.d("Bluetoothchat", "Odebrano UID od urządzenia: $foreignUid")
+                    fetchAndSaveForeignSpots(context, foreignUid)
+                    sendOwnUidIfNeeded()
+                } else {
+                    _messages.update { it + ChatMessage(readMessage, isLocalUser = false) }
+                }
             }
-            MESSAGE_WRITE -> {
-//                val writeBuf = msg.obj as ByteArray
-//                val writeMessage = String(writeBuf)
-//                _messages.update { it + ChatMessage(writeMessage, isLocalUser = true) }
-            }
+            MESSAGE_WRITE -> { /* ... */ }
             MESSAGE_DEVICE_NAME -> {
                 val deviceName = msg.data.getString("device_name")
                 if (deviceName != null) {
                     _connectionState.value = ConnectionState.Connected(deviceName)
                 }
+                //Log.d("Bluetooth", "Połączono z urządzeniem: $deviceName")
             }
             MESSAGE_TOAST -> {
-                val toastMessage = msg.data.getString("toast")
-                if (toastMessage != null) {
-                    _connectionState.value = ConnectionState.Error(toastMessage)
-                }
+                val toastMessage = msg.data.getString("toast") ?: "Nieznany błąd Bluetooth"
+                Log.e("Bluetoothchat", "TOAST: $toastMessage")
+                _connectionState.value = ConnectionState.Error(toastMessage)
             }
         }
         true
@@ -273,7 +323,6 @@ class BluetoothChatManager(private val context: Context) {
         context.registerReceiver(discoveryReceiver, filter)
         bluetoothAdapter?.startDiscovery()
         _connectionState.value = ConnectionState.Connecting
-        Toast.makeText(context, "Coś się wydarzyło", Toast.LENGTH_SHORT).show()
     }
 
     fun connectToDevice(device: BluetoothDevice) {
@@ -281,9 +330,37 @@ class BluetoothChatManager(private val context: Context) {
         bluetoothAdapter?.cancelDiscovery()
         // Uruchom ConnectThread
         connectThread?.cancel()
-        connectThread = ConnectThread(device, MY_UUID) // Przekaż handler
-        connectThread?.start()
-        _connectionState.value = ConnectionState.Connecting
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            // Rozpocznij parowanie
+            device.createBond()
+            // Nasłuchuj na zakończenie parowania
+            val bondReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val action = intent?.action
+                    val bondedDevice: BluetoothDevice? = intent?.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                    val bondState = intent?.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+                    if (action == BluetoothDevice.ACTION_BOND_STATE_CHANGED && bondedDevice?.address == device.address) {
+                        if (bondState == BluetoothDevice.BOND_BONDED) {
+                            context?.unregisterReceiver(this)
+                            // Po sparowaniu uruchom ConnectThread
+                            connectThread = ConnectThread(device, MY_UUID)
+                            connectThread?.start()
+                            _connectionState.value = ConnectionState.Connecting
+                        } else if (bondState == BluetoothDevice.BOND_NONE) {
+                            context?.unregisterReceiver(this)
+                            _connectionState.value = ConnectionState.Error("Parowanie nie powiodło się")
+                        }
+                    }
+                }
+            }
+            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            context.registerReceiver(bondReceiver, filter)
+        } else {
+            // Już sparowane, łącz od razu
+            connectThread = ConnectThread(device, MY_UUID)
+            connectThread?.start()
+            _connectionState.value = ConnectionState.Connecting
+        }
     }
 
     fun writeMessage(message: String) {
@@ -303,7 +380,39 @@ class BluetoothChatManager(private val context: Context) {
         _connectionState.value = ConnectionState.Disconnected
     }
 
+    private fun sendOwnUid() {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid
+        if (uid != null) {
+            writeMessage("UID:$uid")
+        }
+        Toast.makeText(context, "Coś się wydarzyło", Toast.LENGTH_SHORT).show()
+    }
+
     // ... Wewnętrzne klasy wątków (AcceptThread, ConnectThread, ConnectedThread) ...
     // Pamiętaj, aby w ConnectedThread przekazywać dane do Handlera:
     // mHandler.obtainMessage(MESSAGE_READ, bytes, -1, buffer).sendToTarget();
+}
+
+private fun fetchAndSaveForeignSpots(context: Context, foreignUid: String) {
+    val db = Firebase.firestore
+    val myUid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+
+    Log.d("Bluetoothchat", "Wywołano fetchAndSaveForeignSpots dla foreignUid=$foreignUid, myUid=$myUid")
+
+    db.collection("users").document(foreignUid).collection("spots")
+        .whereEqualTo("userId", foreignUid)
+        .get()
+        .addOnSuccessListener { result ->
+            val spots = result.documents.mapNotNull { it.data }
+            Log.d("Bluetoothchat", "Pobrano ${spots.size} spotów od foreignUid=$foreignUid")
+            spots.forEach { spotData ->
+                Log.d("Bluetoothchat", "Dodaję spot: $spotData")
+                db.collection("users").document(myUid).collection("spots")
+                    .add(spotData)
+            }
+            Toast.makeText(context, "Punkty zostały przesłane!", Toast.LENGTH_SHORT).show()
+        }
+        .addOnFailureListener { e ->
+            Log.e("Bluetoothchat", "Błąd pobierania spotów: ${e.message}", e)
+        }
 }

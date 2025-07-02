@@ -443,7 +443,9 @@ fun BluetoothPermissionScreen() {
 
     val bluetoothPermissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            listOf(Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION)
         } else {
             listOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -459,22 +461,33 @@ fun BluetoothPermissionScreen() {
         val allPermissionsGranted = permissionState.allPermissionsGranted
 
         if (allPermissionsGranted) {
+            LaunchedEffect(Unit) {
+                (context as? MainActivity)?.makeDeviceDiscoverable()
+                bluetoothChatManager.startServer()
+            }
             Button(onClick = {
                 bluetoothChatManager.startClient()
                 searching.value = true
-                val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
-                context.startActivity(intent)
 
-//                Toast.makeText(context, "Wykonuję operacje Bluetooth...", Toast.LENGTH_SHORT).show()
             }) {
                 Text("Uruchom wyszukiwanie urządzeń Bluetooth")
             }
-
-            if( searching.value && !isFinished) {
+            if (searching.value) {
                 Text("wyszukuję urządzenia...")
+            }
+            foundDevices.forEach { device ->
+                val deviceName:String  = try {
+                    device.name
+                }catch(e: SecurityException){
+                    "Nieznane"
+                }
+                Text("Znaleziono urządzenie: ${deviceName ?: "Nieznane"} (${device.address})", modifier = Modifier.clickable {
+                    bluetoothChatManager.connectToDevice(device)
+                })
             }
             if (isFinished) {
                 Text("Wyszukiwanie zakończone.")
+                searching.value = false
             }
         } else {
             val anyPermissionDenied = permissionState.revokedPermissions.any { it.status.shouldShowRationale }

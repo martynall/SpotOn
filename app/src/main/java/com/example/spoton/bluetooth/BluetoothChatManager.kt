@@ -145,10 +145,12 @@ class BluetoothChatManager(private val context: Context) {
 
         override fun run() {
             bluetoothAdapter?.cancelDiscovery() // Zawsze anuluj discovery
-
             try {
                 mmSocket?.connect()
+                android.util.Log.i("BluetoothChatManager", "Połączono z urządzeniem: ${device.name} (${device.address})")
+                mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Udało się połączyć z urządzeniem") }).sendToTarget()
             } catch (e: IOException) {
+                android.util.Log.e("BluetoothChatManager", "Błąd połączenia z ${device.name} (${device.address}): ${e.message}", e)
                 try { mmSocket?.close() } catch (e2: IOException) { /* Logowanie błędu */ }
                 mHandler.obtainMessage(MESSAGE_TOAST, Bundle().apply { putString("toast", "Nie udało się połączyć z urządzeniem: ${e.message}") }).sendToTarget()
                 _connectionState.value = ConnectionState.Disconnected
@@ -273,17 +275,22 @@ class BluetoothChatManager(private val context: Context) {
         context.registerReceiver(discoveryReceiver, filter)
         bluetoothAdapter?.startDiscovery()
         _connectionState.value = ConnectionState.Connecting
-        Toast.makeText(context, "Coś się wydarzyło", Toast.LENGTH_SHORT).show()
     }
 
     fun connectToDevice(device: BluetoothDevice) {
-        // Anuluj discovery jeśli trwa
+        val bondedDevice: BluetoothDevice? = bluetoothAdapter?.bondedDevices?.firstOrNull {
+            it.address == device.address
+        }
         bluetoothAdapter?.cancelDiscovery()
-        // Uruchom ConnectThread
-        connectThread?.cancel()
-        connectThread = ConnectThread(device, MY_UUID) // Przekaż handler
-        connectThread?.start()
-        _connectionState.value = ConnectionState.Connecting
+        if (bondedDevice != null) {
+            connectThread?.cancel()
+            connectThread = ConnectThread(bondedDevice, MY_UUID) // Przekaż handler
+            connectThread?.start()
+            _connectionState.value = ConnectionState.Connecting
+        } else {
+            val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+            context.startActivity(intent)
+        }
     }
 
     fun writeMessage(message: String) {

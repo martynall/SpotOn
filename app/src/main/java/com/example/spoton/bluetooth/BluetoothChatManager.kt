@@ -134,7 +134,9 @@ class BluetoothChatManager(private val context: Context) {
             connectedThread?.start()
             // Następnie anulowanie starych wątków
             acceptThread?.cancel()
-            connectThread?.cancel()
+            if (socket!=connectThread?.mmSocket) {
+                connectThread?.cancel()
+            }
 
             // Czyszczenie referencji
             acceptThread = null
@@ -222,7 +224,7 @@ class BluetoothChatManager(private val context: Context) {
         }
     }
     private inner class ConnectThread(private val device: BluetoothDevice, private val uuid: UUID) : Thread() {
-        private val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
+        val mmSocket: BluetoothSocket? by lazy(LazyThreadSafetyMode.NONE) {
             device.createInsecureRfcommSocketToServiceRecord(uuid)
         }
 
@@ -249,11 +251,15 @@ class BluetoothChatManager(private val context: Context) {
                     // Sprawdź czy połączenie nadal jest aktywne
                     if (socket.isConnected && connectedThread != null) {
                         Handler(Looper.getMainLooper()).post {
-                            try {
-                                sendOwnUidIfNeeded()
-                            } catch (e: Exception) {
-                                Log.e("Bluetoothchat", "Błąd wysyłania UID: ${e.message}")
-                                _connectionState.value = ConnectionState.Error("Błąd wysyłania UID")
+                            while(true){
+                                try {
+                                    sendOwnUidIfNeeded()
+                                    Log.d("Bluetoothchat", "Wysłano UID po połączeniu")
+                                    break
+                                } catch (e: Exception) {
+                                    Log.e("Bluetoothchat", "Błąd wysyłania UID: ${e.message}")
+                                    //_connectionState.value = ConnectionState.Error("Błąd wysyłania UID")
+                                }
                             }
                         }
                     }
@@ -291,18 +297,23 @@ class BluetoothChatManager(private val context: Context) {
                         Log.e("Bluetoothchat", "Socket nie jest połączony")
                         break
                     }
-
-                    val numBytes = mmInStream.read(mmBuffer)
-                    if (numBytes == -1) {
-                        Log.e("Bluetoothchat", "Strumień zamknięty")
-                        break
-                    }
-
-                    Handler(Looper.getMainLooper()).post {
-                        mHandler.obtainMessage(MESSAGE_READ, numBytes, -1, mmBuffer.clone()).sendToTarget()
+                    if (mmInStream.available()>0){
+                        while(true) {
+                            try{
+                                val numBytes = mmInStream.read(mmBuffer)
+                                Handler(Looper.getMainLooper()).post {
+                                    mHandler.obtainMessage(MESSAGE_READ, numBytes, -1, mmBuffer.clone()).sendToTarget()
+                            }
+                            }catch(e: Exception){
+                                Log.e("Bluetoothchat", "Strumień zamknięty")
+                                mmSocket.close()
+                                break
+                            }
+                        }
                     }
                 } catch (e: IOException) {
                     Log.e("Bluetoothchat", "Połączenie utracone: ${e.message}")
+                    mmSocket.close()
                     break
                 }
             }

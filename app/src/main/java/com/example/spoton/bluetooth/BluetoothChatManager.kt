@@ -374,7 +374,10 @@ class BluetoothChatManager(private val context: Context) {
                 if (readMessage.startsWith("UID:")) {
                     val foreignUid = readMessage.removePrefix("UID:").trim()
                     Log.d("Bluetoothchat", "Odebrano UID od urządzenia: $foreignUid")
-                    fetchAndSaveForeignSpots(context, foreignUid)
+                    fetchAndSaveForeignSpots(context, foreignUid){
+                        // Zamknij połączenie po przesłaniu punktów
+                        connectedThread?.cancel()
+                    }
                     // Serwer odsyła swój UID tylko po odebraniu UID od klienta
                     sendOwnUidIfNeeded()
                 } else {
@@ -505,26 +508,24 @@ class BluetoothChatManager(private val context: Context) {
     // mHandler.obtainMessage(MESSAGE_READ, bytes, -1, buffer).sendToTarget();
 }
 
-private fun fetchAndSaveForeignSpots(context: Context, foreignUid: String) {
+private fun fetchAndSaveForeignSpots(context: Context, foreignUid: String, onComplete: () -> Unit) {
     val db = Firebase.firestore
     val myUid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-
-    Log.d("Bluetoothchat", "Wywołano fetchAndSaveForeignSpots dla foreignUid=$foreignUid, myUid=$myUid")
 
     db.collection("users").document(foreignUid).collection("spots")
         .whereEqualTo("userId", foreignUid)
         .get()
         .addOnSuccessListener { result ->
             val spots = result.documents.mapNotNull { it.data }
-            Log.d("Bluetoothchat", "Pobrano ${spots.size} spotów od foreignUid=$foreignUid")
             spots.forEach { spotData ->
-                Log.d("Bluetoothchat", "Dodaję spot: $spotData")
                 db.collection("users").document(myUid).collection("spots")
                     .add(spotData)
             }
             Toast.makeText(context, "Punkty zostały przesłane!", Toast.LENGTH_SHORT).show()
+            onComplete() // zamknięcie połączenia
         }
         .addOnFailureListener { e ->
             Log.e("Bluetoothchat", "Błąd pobierania spotów: ${e.message}", e)
+            onComplete()
         }
 }
